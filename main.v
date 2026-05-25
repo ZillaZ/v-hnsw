@@ -280,7 +280,7 @@ pub fn load_hnsw_snapshot[T](path string) !HNSW[T] {
 	max_neighbours0 := int(read_i64(mut f)!)
 
 	pool_len := read_u64(mut f)!
-	val_size := T.byte_size()
+	val_size := int(T.byte_size())
 
 	mut hnsw := HNSW[T]{
 		token:                token
