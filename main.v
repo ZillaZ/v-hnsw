@@ -30,7 +30,7 @@ fn (a OrdHelperMax[T]) < (b OrdHelperMax[T]) bool {
 	return a.distance > b.distance
 }
 
-struct HNSW[T] {
+pub struct HNSW[T] {
 mut:
 	token                u64
 	entry_point          &Node[T] = unsafe { nil }
@@ -42,7 +42,7 @@ mut:
 	pool                 []Node[T]
 }
 
-fn new_hnsw[T](capacity int, max_neighbours int, ef_construction int) HNSW[T] {
+pub fn new_hnsw[T](capacity int, max_neighbours int, ef_construction int) HNSW[T] {
 	return HNSW[T]{
 		normalization_factor: 1.0 / math.log(f64(max_neighbours))
 		max_neighbours:       max_neighbours
@@ -140,7 +140,7 @@ fn nearest[T](query T, nodes []&Node[T]) &Node[T] {
 	return nodes[best_i]
 }
 
-fn (mut self HNSW[T]) insert(value T) {
+pub fn (mut self HNSW[T]) insert(value T) {
 	new_layer := int(math.floor(-math.log(rand.f64()) * self.normalization_factor))
 	mut new_node := self.alloc_node(value, new_layer)
 
@@ -180,7 +180,7 @@ fn (mut self HNSW[T]) insert(value T) {
 	}
 }
 
-fn (self HNSW[T]) knn_search(query T, k int, ef int) []T {
+pub fn (self HNSW[T]) knn_search(query T, k int, ef int) []T {
 	if unsafe { self.entry_point == nil } { return []T{} }
 
 	mut ep := [self.entry_point]
