@@ -1,10 +1,9 @@
-module main
+module hnsw
 
 import math
 import rand
 import datatypes
 
-@[heap]
 struct Node[T] {
 	token u64
 	layer int
@@ -13,7 +12,6 @@ mut:
 	neighbours []&Node[T]
 }
 
-@[heap]
 struct OrdHelper[T] {
 	distance f64
 	value    &Node[T]
@@ -23,7 +21,6 @@ fn (a OrdHelper[T]) < (b OrdHelper[T]) bool {
 	return a.distance < b.distance
 }
 
-@[heap]
 struct OrdHelperMax[T] {
 	distance f64
 	value    &Node[T]
@@ -33,8 +30,6 @@ fn (a OrdHelperMax[T]) < (b OrdHelperMax[T]) bool {
 	return a.distance > b.distance
 }
 
-// HNSW owns all nodes via `pool`. The pool is pre-allocated to `capacity`
-// so it never reallocates — meaning &pool[i] pointers are stable forever.
 struct HNSW[T] {
 mut:
 	token                u64
@@ -44,7 +39,7 @@ mut:
 	normalization_factor f64
 	max_neighbours       int
 	max_neighbours0      int
-	pool                 []Node[T] // GC root — owns every node
+	pool                 []Node[T]
 }
 
 fn new_hnsw[T](capacity int, max_neighbours int, ef_construction int) HNSW[T] {
@@ -57,8 +52,6 @@ fn new_hnsw[T](capacity int, max_neighbours int, ef_construction int) HNSW[T] {
 	}
 }
 
-// alloc_node appends to the pool and returns a stable pointer into it.
-// Safe as long as pool.len never exceeds the cap set in new_hnsw.
 fn (mut self HNSW[T]) alloc_node(value T, layer int) &Node[T] {
 	self.token += 1
 	self.pool << Node[T]{
@@ -69,7 +62,6 @@ fn (mut self HNSW[T]) alloc_node(value T, layer int) &Node[T] {
 	return &self.pool[self.pool.len - 1]
 }
 
-// Algorithm 2 — SEARCH-LAYER
 fn (self HNSW[T]) search_layer(query T, ef int, layer int, entry_points []&Node[T]) []&Node[T] {
 	mut visited := map[u64]bool{}
 	mut candidates := datatypes.MinHeap[OrdHelper[T]]{}
@@ -78,8 +70,8 @@ fn (self HNSW[T]) search_layer(query T, ef int, layer int, entry_points []&Node[
 
 	for ep in entry_points {
 		d := query.distance_to(ep.value)
-		candidates.insert(OrdHelper[T]{ distance: d, value: ep })
-		w.insert(OrdHelperMax[T]{ distance: d, value: ep })
+		candidates.insert(OrdHelper[T]{ distance: d, value: unsafe { ep } })
+		w.insert(OrdHelperMax[T]{ distance: d, value: unsafe { ep } })
 		if d > w_furthest { w_furthest = d }
 		visited[ep.token] = true
 	}
@@ -98,14 +90,14 @@ fn (self HNSW[T]) search_layer(query T, ef int, layer int, entry_points []&Node[
 
 			d := query.distance_to(neighbour.value)
 			if d < w_furthest || w.len() < ef {
-				candidates.insert(OrdHelper[T]{ distance: d, value: neighbour })
-				w.insert(OrdHelperMax[T]{ distance: d, value: neighbour })
+				candidates.insert(OrdHelper[T]{ distance: d, value: unsafe { neighbour } })
+				w.insert(OrdHelperMax[T]{ distance: d, value: unsafe { neighbour } })
 				if w.len() > ef {
 					w.pop() or {}
 					top := w.peek() or {
 						OrdHelperMax[T]{
 							distance: 0
-							value:    neighbour
+							value:    unsafe { neighbour }
 						}
 					}
 					w_furthest = top.distance
@@ -123,11 +115,10 @@ fn (self HNSW[T]) search_layer(query T, ef int, layer int, entry_points []&Node[
 	return ret
 }
 
-// Algorithm 3 — SELECT-NEIGHBORS-SIMPLE
 fn (self HNSW[T]) select_neighbours(base &Node[T], candidates []&Node[T], m int) []&Node[T] {
 	mut heap := datatypes.MinHeap[OrdHelper[T]]{}
 	for c in candidates {
-		heap.insert(OrdHelper[T]{ distance: base.value.distance_to(c.value), value: c })
+		heap.insert(OrdHelper[T]{ distance: base.value.distance_to(c.value), value: unsafe { c } })
 	}
 	mut ret := []&Node[T]{}
 	for ret.len < m {
@@ -149,7 +140,6 @@ fn nearest[T](query T, nodes []&Node[T]) &Node[T] {
 	return nodes[best_i]
 }
 
-// Algorithm 1 — INSERT
 fn (mut self HNSW[T]) insert(value T) {
 	new_layer := int(math.floor(-math.log(rand.f64()) * self.normalization_factor))
 	mut new_node := self.alloc_node(value, new_layer)
@@ -163,13 +153,11 @@ fn (mut self HNSW[T]) insert(value T) {
 	mut ep := [self.entry_point]
 	l := self.top_layer
 
-	// Phase 1: above new_layer, greedy descent ef=1
 	for lc := l; lc > new_layer; lc-- {
 		w := self.search_layer(value, 1, lc, ep)
 		ep = [nearest(value, w)]
 	}
 
-	// Phase 2: 0..new_layer, full search + connect
 	for lc := math.min(l, new_layer); lc >= 0; lc-- {
 		w := self.search_layer(value, self.ef_construction, lc, ep)
 		m_cap := if lc == 0 { self.max_neighbours0 } else { self.max_neighbours }
@@ -192,7 +180,6 @@ fn (mut self HNSW[T]) insert(value T) {
 	}
 }
 
-// Algorithm 5 — K-NN-SEARCH
 fn (self HNSW[T]) knn_search(query T, k int, ef int) []T {
 	if unsafe { self.entry_point == nil } { return []T{} }
 
@@ -206,34 +193,11 @@ fn (self HNSW[T]) knn_search(query T, k int, ef int) []T {
 
 	mut heap := datatypes.MinHeap[OrdHelper[T]]{}
 	for n in w {
-		heap.insert(OrdHelper[T]{ distance: query.distance_to(n.value), value: n })
+		heap.insert(OrdHelper[T]{ distance: query.distance_to(n.value), value: unsafe { n } })
 	}
 	mut ret := []T{}
 	for ret.len < k {
 		ret << (heap.pop() or { break }).value.value
 	}
 	return ret
-}
-
-// ---- Example value type ----
-
-struct IntWrapper {
-	value int
-}
-
-fn (a IntWrapper) distance_to(b IntWrapper) f64 {
-	return math.abs(f64(a.value) - f64(b.value))
-}
-
-fn (a IntWrapper) < (b IntWrapper) bool {
-	return a.value < b.value
-}
-
-fn main() {
-	mut hnsw := new_hnsw[IntWrapper](1000, 16, 200)
-	for i in 0 .. 1000 {
-		hnsw.insert(IntWrapper{ value: i })
-	}
-	println('5 nearest neighbours of 10 (ef=50):')
-	println(hnsw.knn_search(IntWrapper{ value: 10 }, 5, 50))
 }
